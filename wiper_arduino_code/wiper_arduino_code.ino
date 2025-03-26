@@ -196,14 +196,14 @@ void loop()
     float voltageOffset = 2.6; // when complete wireless
     batteryVoltage = voltage * 3.0 - voltageOffset;
 
-    reportData(false);
+    reportData(false);  // Send data via Bluetooth
     // keyboardControl(false);
     commandControl(false);
 }
 
 void keyboardControl(bool isBluetooth)
 {
-    char inChar = "";
+    char inChar = '\0';
 
     if (isBluetooth)
     {

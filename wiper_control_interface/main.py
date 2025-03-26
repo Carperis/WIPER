@@ -12,7 +12,7 @@ import detection as dt
 import cpp
 from bluetooth import BluetoothInterface
 
-
+import csv
 origin_id = 2
 boundary_corners = []
 erasiable_corners = []
@@ -155,6 +155,36 @@ class App:
 
         # Start the update checker
         self.check_for_updates()
+
+    def initialize_csv():
+        """ Initialize the CSV file for logging motor commands and RPM readings """
+        with open('motor_log.csv', mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(['Timestamp', 'Current X', 'Current Y', 'Target X', 'Target Y', 'Mode', 'Power', 'RPM_M1', 'RPM_M2'])
+
+    def log_to_csv(timestamp, current_x, current_y, target_x, target_y, mode, power, rpm_m1, rpm_m2):
+        """ Log the motor commands and RPM readings to the CSV file """
+        with open('motor_log.csv', mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow([timestamp, current_x, current_y, target_x, target_y, mode, power, rpm_m1, rpm_m2])
+
+    def read_rpm_from_arduino(bluetooth_interface):
+        """ Read RPM values from the Arduino via Bluetooth """
+        response = bluetooth_interface.receive_message().strip()
+        rpm_m1, rpm_m2 = map(float, response.split(","))
+        return rpm_m1, rpm_m2
+
+    def cmd_write_thread(bluetooth_interface):
+        global power, mode, flag_terminate, current_position, target_position
+        initialize_csv()  # Initialize the CSV file
+        while not flag_terminate:
+            timestamp = time.time()
+            rpm_m1, rpm_m2 = read_rpm_from_arduino(bluetooth_interface)  # Read RPM values from Arduino
+            cmd = f"{current_position['x']:.3f},{current_position['y']:.3f}|{target_position['x']:.3f},{target_position['y']:.3f}|{mode}|{power}\n"
+            bluetooth_interface.send_message(cmd)
+            log_to_csv(timestamp, current_position['x'], current_position['y'], target_position['x'], target_position['y'], mode, power, rpm_m1, rpm_m2)
+            time.sleep(0.25)
+
 
     def terminate_program(self):
         global flag_terminate
@@ -299,7 +329,6 @@ class App:
         for message in reversed(self.previous_received_messages):
             self.received_message_text.insert(tk.END, message + "\n")
         self.received_message_text.config(state="disabled")
-
 
 def data_collecting_thread(data_queue):
     # Simulate changing data
@@ -477,15 +506,6 @@ def data_collecting_thread(data_queue):
         # time.sleep(0.01)
     pipeline.stop()
     cv2.destroyAllWindows()
-
-
-def cmd_write_thread(bluetooth_interface):
-    global power, mode, flag_terminate, current_position, target_position
-    while not flag_terminate:
-        cmd = f"{current_position['x']:.3f},{current_position['y']:.3f}|{target_position['x']:.3f},{target_position['y']:.3f}|{mode}|{power}\n"
-        bluetooth_interface.send_message(cmd)
-        time.sleep(0.25)
-
 
 def navigation_thread():
     global y_offset, mode, path, quadrant, current_position, target_position, flag_terminate, power, flag_detectionReady, erasiable_corners, robot_radius, resolution
