@@ -7,32 +7,27 @@ import csv
 import queue
 import re
 import os
-import datetime
-
-from lqr import TVLQRController
 
 # Define global variables
 power = 0
 mode = "default"
 flag_terminate = False
-state = {'x': 0.0, 'y': 0.0, 'theta': 0.0}
-reference = {'x': 0.0, 'y': 0.0}
+current_position = {'x': 0.0, 'y': 0.0}
+target_position = {'x': 0.0, 'y': 0.0}
 
 class BluetoothInterface:
     def __init__(self, port, baudrate):
         self.port = port
         self.baudrate = baudrate
-        self.serial_port = serial.Serial(port=self.port, baudrate=self.baudrate, timeout=1)
-        self.message_queue = queue.Queue()
+        self.serial_port = serial.Serial(
+            port=self.port, baudrate=self.baudrate, timeout=1)
+        self.message_queue = queue.Queue()  # Queue to store received messages
+        # Event to signal the thread to stop
         self.receive_thread_stop = threading.Event()
         self.receive_thread = threading.Thread(target=self.receive_data)
         self.receive_thread.daemon = True
         self.receive_thread.start()
-        self.last_print_time = None
-        self.log_filename = None
-        self.last_power = 0  # Track last power state
-        self.log_folder = r"C:/Users/19536/OneDrive/Current Semester/16745 OCRL/WIPER/WIPER/Logs"
-        os.makedirs(self.log_folder, exist_ok=True)
+        # Register close_serial to be called when the program exits
         atexit.register(self.close_serial)
 
     def send_message(self, message):
@@ -41,30 +36,12 @@ class BluetoothInterface:
     def receive_data(self):
         while not self.receive_thread_stop.is_set():
             if self.serial_port.in_waiting > 0:
-                # print(self.serial_port.readline())
-                # try:
-                #     received_data = self.serial_port.readline().decode().strip()
-                # except:
-                #     print("Error decoding data")
-                #     received_data = ""
-                received_data = self.serial_port.readline()
-                # Calculate and print the print rate
-                current_time = time.time()
-                if self.last_print_time is not None:
-                    delta = current_time - self.last_print_time
-                    if delta > 0:
-                        print_rate = 1.0 / delta
-                        print(f"WIPER [{print_rate:.1f} Hz] {received_data}")
-                    else:
-                        print("WIPER", received_data)
-                else:
-                    print("WIPER", received_data)
-
-                self.last_print_time = current_time
-
-                self.message_queue.put(received_data)
-                # self.logging(received_data)
-
+                print(self.serial_port.readline())
+                received_data = self.serial_port.readline().decode().strip()
+                self.message_queue.put(received_data)  # Store received data in the queue
+                print("WIPER", received_data)
+                #self.log_to_csv(received_data)
+            #time.sleep(0.1)  # Add a small delay to avoid busy waiting
 
     def receive_message(self):
         """ Retrieve a message from the queue """
@@ -72,76 +49,45 @@ class BluetoothInterface:
             return self.message_queue.get_nowait()
         except queue.Empty:
             return ""
-        
+    def log_to_csv(self, received_data):
+        """ Parse and log structured data from Arduino to CSV """
+        pattern = re.compile(
+            r"(?P<Power>ON|OFF)\s+"
+            r"M(?P<Mode>\d+)\s+"
+            r"(?P<BatteryVoltage>[\d.]+)V\s*\|\s*"
+            r"\(\s*(?P<CurrX>[-\d.]+)m,\s*(?P<CurrY>[-\d.]+)m\s*\)\s*=>\s*"
+            r"\(\s*(?P<TargetX>[-\d.]+)m,\s*(?P<TargetY>[-\d.]+)m\s*\)\s*\|\s*"
+            r"L\s*(?P<RPM_M1>[-\d.]+)\s*=\[\s*(?P<DriveM1>-?\d+)\s*\]=>\s*(?P<TargetM1>[-\d.]+)\s*"
+            r"R\s*(?P<RPM_M2>[-\d.]+)\s*=\[\s*(?P<DriveM2>-?\d+)\s*\]=>\s*(?P<TargetM2>[-\d.]+)\s*\|\s*"
+            r"TarDeg\s*(?P<TargetDeg>[-\d.]+)\s*"
+            r"TarDis\s*(?P<TargetDis>[-\d.]+)m\s*\|\s*"
+            r"CurrDeg:\s*(?P<CurrDeg>[-\d.]+)\s*"
+            r"CurrDis:\s*(?P<CurrDis>[-\d.]+)m"
+        )
 
-    def logging(self, received_data):
-        if len(received_data) == 0:
-            if self.log_filename is None:
-                return  # Don't log until power is turned on
-            try:
-                file_exists = os.path.isfile(self.log_filename)
-                with open(self.log_filename, mode='a', newline='') as file:
-                    if not file_exists:
-                        writer.writeheader()
-                    writer.writerow("")
-            except Exception as e:
-                print("Error writing empty line to log:", e)
+        match = pattern.search(received_data)
+        if not match:
+            print("Warning: Unable to parse line:", received_data)
             return
-        try:
-            values = [v for v in received_data.strip().split() if v != '']
-            if len(values) != 18:
-                print("Warning: Unexpected number of values:", len(values), "in:", received_data)
-                return
 
-            power_state = int(values[1])
-            if power_state == 1 and self.last_power == 0:
-                timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                self.log_filename = os.path.join(self.log_folder, f"motor_log_{timestamp}.csv")
-                print("New log file created:", self.log_filename)
+        data = match.groupdict()
 
-            self.last_power = power_state
+        fieldnames = [
+            "Power", "Mode", "BatteryVoltage",
+            "CurrX", "CurrY", "TargetX", "TargetY",
+            "RPM_M1", "DriveM1", "TargetM1",
+            "RPM_M2", "DriveM2", "TargetM2",
+            "TargetDeg", "TargetDis",
+            "CurrDeg", "CurrDis"
+        ]
 
-            if self.log_filename is None:
-                return  # Don't log until power is turned on
+        file_exists = os.path.isfile('motor_log.csv')
+        with open('motor_log.csv', mode='a', newline='') as file:
+            writer = csv.DictWriter(file, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(data)
 
-            data = {
-                "Time": float(values[0]),
-                "Power": int(values[1]),
-                "Mode": int(values[2]),
-                "BatteryVoltage": float(values[3]),
-                "CurrX": float(values[4]),
-                "CurrY": float(values[5]),
-                "TargetX": float(values[6]),
-                "TargetY": float(values[7]),
-                "RPM_M1": float(values[8]),
-                "DriveM1": int(values[9]),
-                "TargetM1": float(values[10]),
-                "RPM_M2": float(values[11]),
-                "DriveM2": int(values[12]),
-                "TargetM2": float(values[13]),
-                "TargetDeg": float(values[14]),
-                "TargetDis": float(values[15]),
-                "CurrDeg": float(values[16]),
-                "CurrDis": float(values[17]),
-            }
-            
-
-            # PLACE HOLDERS
-            state['x'] = 
-            state['y'] = 
-            state['theta'] = 
-            reference['x'] = 
-            reference['y'] = 
-            
-            file_exists = os.path.isfile(self.log_filename)
-            with open(self.log_filename, mode='a', newline='') as file:
-                writer = csv.DictWriter(file, fieldnames=data.keys())
-                if not file_exists:
-                    writer.writeheader()
-                writer.writerow(data)
-
-        except Exception as e:
-            print("Error parsing or logging data:", e)
 
     def close_serial(self):
         self.receive_thread_stop.set()  # Signal the receive thread to stop
@@ -199,10 +145,6 @@ class App:
         # Start the update checker
         self.check_for_updates()
 
-        # Initialize the TVLQR controller
-        self.lqr_controller = None  # Holds an active TVLQRController instance
-        self.use_imu_heading = False  # Set True if using IMU for heading in future
-
     def read_rpm_from_arduino(self):
         """ Read RPM values from the Arduino via Bluetooth """
         response = self.bluetooth_interface.receive_data()
@@ -213,65 +155,28 @@ class App:
         return 0.0, 0.0
 
     def cmd_write_thread(self):
-        global power, mode, flag_terminate, state, reference
+        global power, mode, flag_terminate, current_position, target_position
         logging_active = False  # Flag to control logging state
-        rpm_m1, rpm_m2 = 0.0, 0.0  # Always define defaults
-
         while not flag_terminate:
             timestamp = time.time()
-
-            # Construct command string (if needed for future use)
-            cmd = f"{state['x']:.3f},{state['y']:.3f}|{reference['x']:.3f},{reference['y']:.3f}|{mode}|{power}\n"
-            # self.bluetooth_interface.send_message(cmd)  # optional
-
-            # On power-on: initialize controller
+            #rpm_m1, rpm_m2 = self.read_rpm_from_arduino()  # Read RPM values from Arduino
+            cmd = f"{current_position['x']:.3f},{current_position['y']:.3f}|{target_position['x']:.3f},{target_position['y']:.3f}|{mode}|{power}\n"
+            #self.bluetooth_interface.send_message(cmd)
+            # Check if the motor input is 1 to start logging
             if power == 1 and not logging_active:
                 logging_active = True
                 print("Logging started")
-
-                start_state = (
-                    state['x'],
-                    state['y'],
-                    state.get('theta', 0.0)
-                )
-                self.lqr_controller = TVLQRController(start=start_state, mode=3, N=50)
-
-            # On power-off: stop controller
+            
+            # Check if the motor input is 0 to stop logging
             if power == 0 and logging_active:
                 logging_active = False
                 print("Logging stopped")
-                self.lqr_controller = None
-
-            # Run LQR controller if active
-            if self.lqr_controller is not None:
-                x_curr = np.array([
-                    state['x'],
-                    state['y'],
-                    state.get('theta', 0.0)
-                ])
-                rpm_m1, rpm_m2 = self.lqr_controller.get_control(x_curr)
-                rpm_m1 = max(min(rpm_m1, 300), -300) # clamping RPMs to [-300, 300]
-                rpm_m2 = max(min(rpm_m2, 300), -300)
-
-                cmd = f"{rpm_m1:.1f},{rpm_m2:.1f}\n"
-                self.bluetooth_interface.send_message(cmd)
-
-            # Log data if logging is active
+            
+            # Log data to the buffer if logging is active
             if logging_active:
-                self.log_buffer.append([
-                    timestamp,
-                    state['x'],
-                    state['y'],
-                    reference['x'],
-                    reference['y'],
-                    mode,
-                    power,
-                    rpm_m1,
-                    rpm_m2
-                ])
-
-            time.sleep(0.05)  # Control loop rate
-
+                self.log_buffer.append([timestamp, current_position['x'], current_position['y'], target_position['x'], target_position['y'], mode, power, rpm_m1, rpm_m2])
+            
+            time.sleep(0.1)  # Adjust the delay to ensure commands are sent at an appropriate interval
 
     def send_message(self):
         message = self.message_entry.get()

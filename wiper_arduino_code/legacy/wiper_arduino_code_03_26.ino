@@ -36,7 +36,7 @@ float posiprev_M1 = 0; // Previous position for motor 1
 float posiprev_M2 = 0; // Previous position for motor 2
 float RPM_M1;
 float RPM_M2;
-double Kp = 0.5, Ki = 0, Kd = 0; // Ki = 10
+double Kp = 0, Ki = 10, Kd = 0;
 const int offsetA = 1;
 const int offsetB = 1;
 float RPM_default = 50;
@@ -391,58 +391,43 @@ void reportData(bool isBluetooth)
     int numDec = 1;
 
     dtostrf(startTime, numLen + 2, 1, tempBuffer);
-    snprintf(buffer, sizeof(buffer), "%s ", tempBuffer);
+    snprintf(buffer, sizeof(buffer), "%ss %s ", tempBuffer, power ? "ON" : "OFF");
     
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%d ", power);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%d ", mode);
-    
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "M%d ", mode);
     dtostrf(batteryVoltage, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%sV | ", tempBuffer);
     dtostrf(carx, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "(%sm,", tempBuffer);
     dtostrf(cary, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%sm)=>", tempBuffer);
     // dtostrf(deg, numLen, numDec, tempBuffer);
-    // snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
+    // snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s°, ", tempBuffer);
     dtostrf(targetx, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "(%sm, ", tempBuffer);
     dtostrf(targety, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%sm) | ", tempBuffer);
+
     dtostrf(RPM_M1, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s %d ", tempBuffer, driveM1);
-    
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "L %s =[%4d]=>", tempBuffer, driveM1);
     dtostrf(TargetM1, numLen, numDec, tempBuffer);
     snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
     dtostrf(RPM_M2, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s %d ", tempBuffer, driveM2);
-    
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "R %s =[%4d]=>", tempBuffer, driveM2);
     dtostrf(TargetM2, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s | ", tempBuffer);
     dtostrf(targetAngle, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "TarDeg %s ", tempBuffer);
     dtostrf(targetDistance, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
-    // dtostrf(pitch, numLen, numDec, tempBuffer);
-    // snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    // dtostrf(roll, numLen, numDec, tempBuffer);
-    // snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
-    dtostrf(degToX, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s ", tempBuffer);
-    
-    dtostrf(currDistance, numLen, numDec, tempBuffer);
-    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "%s\n", tempBuffer);
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "TarDis %sm | ", tempBuffer);
 
+    // dtostrf(pitch, numLen, numDec, tempBuffer);
+    // snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "Pitch: %s° ", tempBuffer);
+    // dtostrf(roll, numLen, numDec, tempBuffer);
+    // snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "Roll: %s° ", tempBuffer);
+    dtostrf(degToX, numLen, numDec, tempBuffer);
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "CurrDeg: %s ", tempBuffer);
+    dtostrf(currDistance, numLen, numDec, tempBuffer);
+    snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer), "CurrDis: %sm\n", tempBuffer);
     
     // Print the formatted data from the buffer 
     if (isBluetooth)
