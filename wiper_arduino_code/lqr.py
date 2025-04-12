@@ -25,12 +25,13 @@ class TVLQRController:
         x_ref = self.x_refs[self.step]
         K = self.K_list[self.step]
         u = -K @ (x_curr - x_ref)
-
+        print(f"K[{self.step}] =\n{K}")
         # Convert to RPMs
         rpm_L = (u[0] / (2 * np.pi * self.r)) * 60
         rpm_R = (u[1] / (2 * np.pi * self.r)) * 60
 
         self.step += 1
+        print(f"x_curr: {x_curr}, x_ref: {x_ref}, u: {u}")
         return rpm_L, rpm_R
 
 

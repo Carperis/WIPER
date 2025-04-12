@@ -8,6 +8,7 @@ import queue
 import re
 import os
 import datetime
+import numpy as np
 
 from lqr import TVLQRController
 
@@ -18,7 +19,7 @@ flag_terminate = False
 state = {'x': 0.0, 'y': 0.0, 'theta': 0.0}
 reference = {'x': 0.0, 'y': 0.0}
 
-class BluetoothInterface:
+class SerialInterface:
     def __init__(self, port, baudrate):
         self.port = port
         self.baudrate = baudrate
@@ -30,171 +31,126 @@ class BluetoothInterface:
         self.receive_thread.start()
         self.last_print_time = None
         self.log_filename = None
-        self.last_power = 0  # Track last power state
+        self.last_power = 0
         self.log_folder = r"C:/Users/19536/OneDrive/Current Semester/16745 OCRL/WIPER/WIPER/Logs"
         os.makedirs(self.log_folder, exist_ok=True)
         atexit.register(self.close_serial)
 
     def send_message(self, message):
+        print(f"[PYTHON → ARDUINO] {message.strip()}")  # Debug print
         self.serial_port.write(message.encode())
+
+    def parse_acc_data(self, message):
+        try:
+            message = message.decode(errors='replace').replace('\r', '').replace('\x00', '').strip()
+            if message.startswith("TEST") or not message:
+                return  # Skip debug or empty lines
+
+            values = message.split()
+            if len(values) < 4:
+                print("[WARNING] Not enough values in message")
+                return
+
+            ax_raw, ay_raw, az, dt = map(float, values[:4])
+            acc_x = ay_raw     # Horizontal movement (left-right along wall)
+            acc_y = -ax_raw    # Vertical movement (up-down along wall)
+
+            vx = acc_x * dt
+            vy = acc_y * dt
+            state['x'] += vx
+            state['y'] += vy
+
+            # === Replicating Arduino-based heading estimation ===
+            pitch = np.arctan2(acc_y, np.sqrt(acc_x**2 + az**2)) * (180.0 / np.pi)
+            theta = -(pitch - 90) if acc_x > 0 else (pitch - 90)
+            state['theta'] = theta
+
+            print(f"[STATE] x: {state['x']:.3f}, y: {state['y']:.3f}, θ: {theta:.2f}, ax: {acc_x:.3f}, ay: {acc_y:.3f}, dt: {dt:.3f}")
+
+        except Exception as e:
+            print(f"[ERROR] Failed to parse IMU data: {e}")
 
     def receive_data(self):
         while not self.receive_thread_stop.is_set():
             if self.serial_port.in_waiting > 0:
-                # print(self.serial_port.readline())
-                # try:
-                #     received_data = self.serial_port.readline().decode().strip()
-                # except:
-                #     print("Error decoding data")
-                #     received_data = ""
                 received_data = self.serial_port.readline()
-                # Calculate and print the print rate
-                current_time = time.time()
-                if self.last_print_time is not None:
-                    delta = current_time - self.last_print_time
-                    if delta > 0:
-                        print_rate = 1.0 / delta
-                        print(f"WIPER [{print_rate:.1f} Hz] {received_data}")
-                    else:
-                        print("WIPER", received_data)
-                else:
-                    print("WIPER", received_data)
-
-                self.last_print_time = current_time
-
+                self.parse_acc_data(received_data)
                 self.message_queue.put(received_data)
-                # self.logging(received_data)
-
 
     def receive_message(self):
-        """ Retrieve a message from the queue """
         try:
             return self.message_queue.get_nowait()
         except queue.Empty:
             return ""
-        
-
-    def logging(self, received_data):
-        if len(received_data) == 0:
-            if self.log_filename is None:
-                return  # Don't log until power is turned on
-            try:
-                file_exists = os.path.isfile(self.log_filename)
-                with open(self.log_filename, mode='a', newline='') as file:
-                    if not file_exists:
-                        writer.writeheader()
-                    writer.writerow("")
-            except Exception as e:
-                print("Error writing empty line to log:", e)
-            return
-        try:
-            values = [v for v in received_data.strip().split() if v != '']
-            if len(values) != 18:
-                print("Warning: Unexpected number of values:", len(values), "in:", received_data)
-                return
-
-            power_state = int(values[1])
-            if power_state == 1 and self.last_power == 0:
-                timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                self.log_filename = os.path.join(self.log_folder, f"motor_log_{timestamp}.csv")
-                print("New log file created:", self.log_filename)
-
-            self.last_power = power_state
-
-            if self.log_filename is None:
-                return  # Don't log until power is turned on
-
-            data = {
-                "Time": float(values[0]),
-                "Power": int(values[1]),
-                "Mode": int(values[2]),
-                "BatteryVoltage": float(values[3]),
-                "CurrX": float(values[4]),
-                "CurrY": float(values[5]),
-                "TargetX": float(values[6]),
-                "TargetY": float(values[7]),
-                "RPM_M1": float(values[8]),
-                "DriveM1": int(values[9]),
-                "TargetM1": float(values[10]),
-                "RPM_M2": float(values[11]),
-                "DriveM2": int(values[12]),
-                "TargetM2": float(values[13]),
-                "TargetDeg": float(values[14]),
-                "TargetDis": float(values[15]),
-                "CurrDeg": float(values[16]),
-                "CurrDis": float(values[17]),
-            }
-            
-
-            # PLACE HOLDERS
-            state['x'] = 
-            state['y'] = 
-            state['theta'] = 
-            reference['x'] = 
-            reference['y'] = 
-            
-            file_exists = os.path.isfile(self.log_filename)
-            with open(self.log_filename, mode='a', newline='') as file:
-                writer = csv.DictWriter(file, fieldnames=data.keys())
-                if not file_exists:
-                    writer.writeheader()
-                writer.writerow(data)
-
-        except Exception as e:
-            print("Error parsing or logging data:", e)
 
     def close_serial(self):
-        self.receive_thread_stop.set()  # Signal the receive thread to stop
-        self.receive_thread.join()  # Wait for the receive thread to stop
+        self.send_message("0,0\n")
+        self.receive_thread_stop.set()
+        self.receive_thread.join()
         if self.serial_port.is_open:
             self.serial_port.close()
 
+
+
 class App:
-    def __init__(self, master, bluetooth_interface):
+    def __init__(self, master, serial_interface):
         self.master = master
-        self.bluetooth_interface = bluetooth_interface
+        self.serial_interface = serial_interface
         self.previous_messages = []
         self.previous_received_messages = []
         self.current_message_index = -1
         self.data_queue = queue.Queue()  # Initialize the data_queue
         self.log_buffer = []  # Initialize the log buffer
+        self.selected_mode = 1  # Default mode is 1
 
+        # === Layout Start ===
         self.frame = tk.Frame(self.master)
-        self.frame.pack()
+        self.frame.pack(padx=20, pady=20)
 
+        # === Top row: Mode + Power ===
+        self.mode_label = tk.Label(self.frame, text="Select Mode:")
+        self.mode_label.grid(row=0, column=0, sticky='w')
+
+        self.mode_var = tk.StringVar(self.master)
+        self.mode_var.set("1")
+        self.mode_dropdown = tk.OptionMenu(self.frame, self.mode_var, "1", "2", "3", "4", command=self.update_mode)
+        self.mode_dropdown.grid(row=0, column=1, sticky='w')
+
+        self.power_on_button = tk.Button(self.frame, text="Power ON", bg="green", fg="white", command=self.send_power_on)
+        self.power_on_button.grid(row=0, column=2, padx=10)
+
+        self.power_off_button = tk.Button(self.frame, text="Power OFF", bg="red", fg="white", command=self.send_power_off)
+        self.power_off_button.grid(row=0, column=3, padx=5)
+
+        # === Message input ===
         self.message_label = tk.Label(self.frame, text="Message:")
-        self.message_label.grid(row=0, column=0)
+        self.message_label.grid(row=1, column=0, sticky='w')
 
-        self.message_entry = tk.Entry(self.frame)
-        self.message_entry.grid(row=0, column=1)
-        # Bind Return key to send_message_event
+        self.message_entry = tk.Entry(self.frame, width=30)
+        self.message_entry.grid(row=1, column=1, columnspan=2, sticky='w')
         self.message_entry.bind("<Return>", self.send_message_event)
 
-        self.send_button = tk.Button(
-            self.frame, text="Send", command=self.send_message)
-        self.send_button.grid(row=0, column=2)
+        self.send_button = tk.Button(self.frame, text="Send", command=self.send_message)
+        self.send_button.grid(row=1, column=3, padx=5)
 
-        self.message_history_label = tk.Label(
-            self.frame, text="Message History:")
-        self.message_history_label.grid(
-            row=1, column=0, columnspan=3, sticky="w")
+        # === Message History ===
+        self.message_history_label = tk.Label(self.frame, text="Message History:")
+        self.message_history_label.grid(row=2, column=0, columnspan=4, sticky="w")
 
-        self.message_history_text = tk.Text(self.frame, height=10, width=40)
-        self.message_history_text.grid(row=2, column=0, columnspan=3)
+        self.message_history_text = tk.Text(self.frame, height=6, width=80)
+        self.message_history_text.grid(row=3, column=0, columnspan=4)
 
-        self.received_message_label = tk.Label(
-            self.frame, text="Received Message:")
-        self.received_message_label.grid(row=3, column=0, sticky="w")
+        # === Received Messages ===
+        self.received_message_label = tk.Label(self.frame, text="Received Message:")
+        self.received_message_label.grid(row=4, column=0, columnspan=4, sticky="w")
 
-        self.received_message_text = tk.Text(self.frame, height=10, width=150)
-        self.received_message_text.grid(row=4, column=0, columnspan=3)
+        self.received_message_text = tk.Text(self.frame, height=10, width=120)
+        self.received_message_text.grid(row=5, column=0, columnspan=4)
 
+        # === Status at the bottom ===
         self.status_label = tk.Label(self.frame, text="Status:")
-        self.status_label.grid(row=5, column=0, columnspan=3, sticky="w")
+        self.status_label.grid(row=6, column=0, columnspan=4, sticky="w", pady=(10, 0))
 
-        # Bind up and down arrow keys to load previous messages
-        self.master.bind("<Up>", self.load_previous_message)
-        self.master.bind("<Down>", self.load_next_message)
 
         # Start the update checker
         self.check_for_updates()
@@ -203,14 +159,21 @@ class App:
         self.lqr_controller = None  # Holds an active TVLQRController instance
         self.use_imu_heading = False  # Set True if using IMU for heading in future
 
-    def read_rpm_from_arduino(self):
-        """ Read RPM values from the Arduino via Bluetooth """
-        response = self.bluetooth_interface.receive_data()
-        print("response",response)
-        if response:
-            rpm_m1, rpm_m2 = map(float, response.split(","))
-            return rpm_m1, rpm_m2
-        return 0.0, 0.0
+    def send_power_on(self):
+        global power
+        power = 1
+        print("[INFO] Power ON activated.")
+
+    def send_power_off(self):
+        global power
+        power = 0
+        print("[INFO] Power OFF activated.")
+        self.serial_interface.send_message("0.0,0.0\n")  # stop motors just in case
+
+    def update_mode(self, mode):
+        """Update the selected mode for the trajectory."""
+        self.selected_mode = int(mode)
+        print(f"Mode updated to: {self.selected_mode}")
 
     def cmd_write_thread(self):
         global power, mode, flag_terminate, state, reference
@@ -220,26 +183,21 @@ class App:
         while not flag_terminate:
             timestamp = time.time()
 
-            # Construct command string (if needed for future use)
-            cmd = f"{state['x']:.3f},{state['y']:.3f}|{reference['x']:.3f},{reference['y']:.3f}|{mode}|{power}\n"
-            # self.bluetooth_interface.send_message(cmd)  # optional
-
             # On power-on: initialize controller
             if power == 1 and not logging_active:
                 logging_active = True
-                print("Logging started")
-
+                print("[INFO] Power ON: Logging started.")
                 start_state = (
                     state['x'],
                     state['y'],
                     state.get('theta', 0.0)
                 )
-                self.lqr_controller = TVLQRController(start=start_state, mode=3, N=50)
+                self.lqr_controller = TVLQRController(start=start_state, mode=self.selected_mode, N=50)
 
             # On power-off: stop controller
             if power == 0 and logging_active:
                 logging_active = False
-                print("Logging stopped")
+                print("[INFO] Power OFF: Logging stopped.")
                 self.lqr_controller = None
 
             # Run LQR controller if active
@@ -250,32 +208,22 @@ class App:
                     state.get('theta', 0.0)
                 ])
                 rpm_m1, rpm_m2 = self.lqr_controller.get_control(x_curr)
-                rpm_m1 = max(min(rpm_m1, 300), -300) # clamping RPMs to [-300, 300]
-                rpm_m2 = max(min(rpm_m2, 300), -300)
 
-                cmd = f"{rpm_m1:.1f},{rpm_m2:.1f}\n"
-                self.bluetooth_interface.send_message(cmd)
+                # Clamp RPM to avoid overspeeding
+                #rpm_m1 = max(min(rpm_m1, 300), -300)
+                #rpm_m2 = max(min(rpm_m2, 300), -300)
 
-            # Log data if logging is active
-            if logging_active:
-                self.log_buffer.append([
-                    timestamp,
-                    state['x'],
-                    state['y'],
-                    reference['x'],
-                    reference['y'],
-                    mode,
-                    power,
-                    rpm_m1,
-                    rpm_m2
-                ])
+                # === ONLY SEND RAW RPMs ===
+                rpm_cmd = f"{rpm_m1:.1f},{rpm_m2:.1f}\n"
+                self.serial_interface.send_message(rpm_cmd)
+
+                print(f"[MOTOR OUTPUT] RPM_M1: {rpm_m1:.1f}, RPM_M2: {rpm_m2:.1f}")
 
             time.sleep(0.05)  # Control loop rate
 
-
     def send_message(self):
         message = self.message_entry.get()
-        self.bluetooth_interface.send_message(message)
+        self.serial_interface.send_message(message)  # Use serial_interface instead of bluetooth_interface
         self.previous_messages.insert(0, message)
         self.current_message_index = -1
         self.message_entry.delete(0, tk.END)
@@ -322,7 +270,10 @@ class App:
         try:
             map_corners, plot_para, path, status, erasiable_corners = self.data_queue.get_nowait()
             self.status_label.config(
-                text=f"Quadrant: {status[2]}\nPower: {status[0]}\nMode: {status[1]}\nCurrent Position: ({status[3]['x']:.2f}, {status[3]['y']:.2f})\nTarget Position: \t({status[4]['x']:.2f}, {status[4]['y']:.2f})")
+                text=f"Power: {power}, Mode: {mode}\n"
+                     f"Current: x={state['x']:.2f}, y={state['y']:.2f}, θ={state['theta']:.2f}\n"
+                     f"Target:  x={reference['x']:.2f}, y={reference['y']:.2f}"
+            )
             self.draw_map(map_corners, plot_para, path, erasiable_corners)
         except queue.Empty:
             pass
@@ -330,25 +281,29 @@ class App:
             self.master.after(1, self.check_for_updates)
 
 def main():
-    bluetooth_port = 'COM4'  # for Windows
+    serial_port = 'COM3'  # Replace with your serial port (e.g., '/dev/ttyUSB0' for Linux)
     
-    bluetooth_interface = BluetoothInterface(
-        port=bluetooth_port, baudrate=9600)
+    serial_interface = SerialInterface(
+        port=serial_port, baudrate=9600)
     root = tk.Tk()
     root.title("WIPER CONTROL")
-    app = App(root, bluetooth_interface)
+    app = App(root, serial_interface)
 
-    # Calculate the position to center the window
-    window_width = 400  # Adjust width as needed
-    window_height = 200  # Adjust height as needed
+    # Adjust the window dimensions to fit all content
+    window_width = 800  # Increased width
+    window_height = 600  # Increased height
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     x_coordinate = (screen_width - window_width) // 2
     y_coordinate = (screen_height - window_height) // 2
 
     # Set window dimensions and position
-    root.geometry(
-        f"{window_width}x{window_height}+{x_coordinate}+{y_coordinate}")
+    root.geometry(f"{window_width}x{window_height}+{x_coordinate}+{y_coordinate}")
+
+    # Allow widgets to resize with the window
+    root.grid_rowconfigure(0, weight=1)
+    root.grid_columnconfigure(0, weight=1)
+
     # Properly close the GUI window
     root.protocol("WM_DELETE_WINDOW", root.quit)
 
