@@ -1,5 +1,4 @@
 // Include necessary libraries
-#include <SparkFun_TB6612.h>
 #include <Servo.h>
 #include "Wire.h"
 
@@ -57,9 +56,6 @@ float vx = 0, vy = 0;
 unsigned long lastIMUTime = 0;
 float dt = 0;
 
-Motor motor1 = Motor(AIN1_M1, AIN2_M1, PWM_M1, offsetA, STBY);
-Motor motor2 = Motor(BIN1_M2, BIN2_M2, PWM_M2, offsetB, STBY);
-
 // Servo variables
 Servo servo1;
 Servo servo2;
@@ -94,7 +90,18 @@ void setup() {
   pinMode(ENCA_M2, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(ENCA_M1), readEncoderM1, RISING);
   attachInterrupt(digitalPinToInterrupt(ENCA_M2), readEncoderM2, RISING);
-
+  
+  pinMode(STBY, OUTPUT);
+  digitalWrite(STBY, HIGH);
+  pinMode(AIN1_M1, OUTPUT);
+  pinMode(AIN2_M1, OUTPUT);
+  pinMode(PWM_M1, OUTPUT);
+  pinMode(BIN1_M2, OUTPUT);
+  pinMode(BIN2_M2, OUTPUT);
+  pinMode(PWM_M2, OUTPUT);
+  pinMode(STBY, OUTPUT);
+  digitalWrite(STBY, HIGH);  // This MUST be HIGH to enable motors
+  
   Wire.begin();
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(0x6B);
@@ -108,14 +115,33 @@ void loop() {
 
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
-    int sep = cmd.indexOf(',');
-    if (sep > 0) {
-      lastRPM1 = cmd.substring(0, sep).toFloat();
-      lastRPM2 = cmd.substring(sep + 1).toFloat();
-      Serial.print("Received RPMs: ");
-      Serial.print(lastRPM1);
-      Serial.print(", ");
-      Serial.println(lastRPM2);
+  
+    if (cmd.length() > 0) {
+      double r1 = 0.0, r2 = 0.0;
+      int duration = 0;
+  
+      // Parse first number (r1)
+      r1 = cmd.substring(0, cmd.indexOf(',')).toDouble();
+      cmd.remove(0, cmd.indexOf(',') + 1);
+  
+      // Parse second number (r2)
+      if (cmd.indexOf(',') != -1) {
+        r2 = cmd.substring(0, cmd.indexOf(',')).toDouble();
+        cmd.remove(0, cmd.indexOf(',') + 1);
+  
+        // Parse third value (duration)
+        duration = cmd.toInt();
+  
+        // Run motors for duration
+        setMotors((int)r1, (int)r2);
+        delay(duration);
+        setMotors(0, 0);
+      } else {
+        // Only r1 and r2 provided, no duration
+        r2 = cmd.toDouble();
+        lastRPM1 = r1;
+        lastRPM2 = r2;
+      }
     }
   }
   setMotors(lastRPM1, lastRPM2);
@@ -160,8 +186,6 @@ void loop() {
   float voltageOffset = 2.6;
   batteryVoltage = voltage * 3.0 - voltageOffset;
   static int counter = 0;
-  Serial.print("TEST COUNT: ");
-  Serial.println(counter++);
   
   // Guard bad IMU reads
   if (isnan(imuX)) imuX = 0;
@@ -209,12 +233,25 @@ void calculateSpeed() {
 }
 
 void setMotors(int rpm1, int rpm2) {
+  // === Motor 1 ===
   int pwm1 = constrain(map(abs(rpm1), 0, 300, 0, 255), 0, 255);
+  if (rpm1 >= 0) {
+    digitalWrite(AIN1_M1, HIGH);
+    digitalWrite(AIN2_M1, LOW);
+  } else {
+    digitalWrite(AIN1_M1, LOW);
+    digitalWrite(AIN2_M1, HIGH);
+  }
+  analogWrite(PWM_M1, pwm1);
+
+  // === Motor 2 ===
   int pwm2 = constrain(map(abs(rpm2), 0, 300, 0, 255), 0, 255);
-  digitalWrite(IN1, rpm1 >= 0 ? HIGH : LOW);
-  digitalWrite(IN2, rpm1 >= 0 ? LOW : HIGH);
-  analogWrite(ENA, pwm1);
-  digitalWrite(IN3, rpm2 >= 0 ? HIGH : LOW);
-  digitalWrite(IN4, rpm2 >= 0 ? LOW : HIGH);
-  analogWrite(ENB, pwm2);
+  if (rpm2 >= 0) {
+    digitalWrite(BIN1_M2, HIGH);
+    digitalWrite(BIN2_M2, LOW);
+  } else {
+    digitalWrite(BIN1_M2, LOW);
+    digitalWrite(BIN2_M2, HIGH);
+  }
+  analogWrite(PWM_M2, pwm2);
 }

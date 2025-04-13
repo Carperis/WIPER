@@ -10,7 +10,7 @@ import os
 import datetime
 import numpy as np
 
-from lqr import TVLQRController
+from lqr import generate_reference_trajectory, RecedingTVLQRController, TVLQRController
 
 # Define global variables
 power = 0
@@ -61,8 +61,7 @@ class SerialInterface:
             state['y'] += vy
 
             # === Replicating Arduino-based heading estimation ===
-            pitch = np.arctan2(acc_y, np.sqrt(acc_x**2 + az**2)) * (180.0 / np.pi)
-            theta = -(pitch - 90) if acc_x > 0 else (pitch - 90)
+            theta = np.degrees(np.arctan2(ay_raw, ax_raw)) % 360
             state['theta'] = theta
 
             print(f"[STATE] x: {state['x']:.3f}, y: {state['y']:.3f}, θ: {theta:.2f}, ax: {acc_x:.3f}, ay: {acc_y:.3f}, dt: {dt:.3f}")
@@ -192,7 +191,12 @@ class App:
                     state['y'],
                     state.get('theta', 0.0)
                 )
-                self.lqr_controller = TVLQRController(start=start_state, mode=self.selected_mode, N=50)
+                # OPTION 1: Traditional TVLQR
+                # self.lqr_controller = TVLQRController(start=start_state, mode=self.selected_mode, N=50)
+
+                # OPTION 2: Receding-Horizon TVLQR
+                full_ref = generate_reference_trajectory(start_state, N=50, mode=self.selected_mode)
+                self.lqr_controller = RecedingTVLQRController(full_ref_traj=full_ref, N=10)
 
             # On power-off: stop controller
             if power == 0 and logging_active:
@@ -219,7 +223,8 @@ class App:
 
                 print(f"[MOTOR OUTPUT] RPM_M1: {rpm_m1:.1f}, RPM_M2: {rpm_m2:.1f}")
 
-            time.sleep(0.05)  # Control loop rate
+            time.sleep(0.1)  # Control loop rate
+
 
     def send_message(self):
         message = self.message_entry.get()
@@ -280,36 +285,34 @@ class App:
         finally:
             self.master.after(1, self.check_for_updates)
 
+
 def main():
-    serial_port = 'COM3'  # Replace with your serial port (e.g., '/dev/ttyUSB0' for Linux)
-    
-    serial_interface = SerialInterface(
-        port=serial_port, baudrate=9600)
+    serial_port = 'COM3'  # Use your actual Arduino port
+    serial_interface = SerialInterface(port=serial_port, baudrate=9600)
+
+    time.sleep(2.5)  # Allow Arduino time to boot
+
+    # One-shot motor command: 400 RPM left, -400 RPM right, run for 3000ms
+    serial_interface.send_message("400.0,-400.0,3000\n")
+    time.sleep(3.2)
+    # === GUI Setup ===
     root = tk.Tk()
     root.title("WIPER CONTROL")
     app = App(root, serial_interface)
 
-    # Adjust the window dimensions to fit all content
-    window_width = 800  # Increased width
-    window_height = 600  # Increased height
+    window_width = 800
+    window_height = 600
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     x_coordinate = (screen_width - window_width) // 2
     y_coordinate = (screen_height - window_height) // 2
-
-    # Set window dimensions and position
     root.geometry(f"{window_width}x{window_height}+{x_coordinate}+{y_coordinate}")
-
-    # Allow widgets to resize with the window
     root.grid_rowconfigure(0, weight=1)
     root.grid_columnconfigure(0, weight=1)
-
-    # Properly close the GUI window
     root.protocol("WM_DELETE_WINDOW", root.quit)
 
-    # Start the background threads
-    thread1 = threading.Thread(
-        target=app.cmd_write_thread)
+    # === Start Control Thread ===
+    thread1 = threading.Thread(target=app.cmd_write_thread)
     thread1.daemon = True
     thread1.start()
 
