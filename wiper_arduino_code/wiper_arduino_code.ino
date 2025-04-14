@@ -81,6 +81,13 @@ double targetx = 0;
 double targety = 0;
 float targetAngle, targetDistance, currDistance = 0;
 
+double r1 = 0.0;
+double r2 = 0.0;
+int duration = 0;
+
+bool isRunning = false;
+unsigned long commandStartTime = 0;
+
 void setup() {
   Serial.begin(9600);
   servo1.attach(servo1pin);
@@ -111,14 +118,13 @@ void setup() {
 
 void loop() {
   startTime = millis();
-  calculateSpeed();
+  //calculateSpeed();
 
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
   
     if (cmd.length() > 0) {
-      double r1 = 0.0, r2 = 0.0;
-      int duration = 0;
+      Serial.println(cmd);
   
       // Parse first number (r1)
       r1 = cmd.substring(0, cmd.indexOf(',')).toDouble();
@@ -130,20 +136,40 @@ void loop() {
         cmd.remove(0, cmd.indexOf(',') + 1);
   
         // Parse third value (duration)
+        // Parse third value (duration)
         duration = cmd.toInt();
+        commandStartTime = millis();
+        isRunning = true;
+
+        // Set motors immediately
+        lastRPM1 = r1;
+        lastRPM2 = r2;
   
         // Run motors for duration
-        setMotors((int)r1, (int)r2);
-        delay(duration);
-        setMotors(0, 0);
+        // setMotors((int)r1, (int)r2);
+        // delay(duration);
+        // setMotors(0, 0);
+
       } else {
         // Only r1 and r2 provided, no duration
         r2 = cmd.toDouble();
         lastRPM1 = r1;
         lastRPM2 = r2;
+        isRunning = false;
       }
+      //Serial.print("Parsed r1: "); Serial.println(r1);
+      //Serial.print("Parsed r2: "); Serial.println(r2);
+      //Serial.print("Duration: "); Serial.println(duration);
     }
   }
+    if (isRunning && duration > 0) {
+      if (millis() - commandStartTime >= duration) {
+        lastRPM1 = 0;
+        lastRPM2 = 0;
+        isRunning = false;
+      }
+    }
+  
   setMotors(lastRPM1, lastRPM2);
 
   Wire.beginTransmission(MPU_ADDR);

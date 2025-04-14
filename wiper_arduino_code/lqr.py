@@ -106,9 +106,9 @@ def linearize_dynamics(theta, v0, L):
     ])
 
     B = np.array([
-        [0.5 * np.cos(theta), 0.5 * np.cos(theta)],
-        [0.5 * np.sin(theta), 0.5 * np.sin(theta)],
-        [-1 / L, 1 / L]
+        [np.cos(theta), 0],
+        [np.sin(theta), 0],
+        [0, 1]
     ])
 
     return A, B

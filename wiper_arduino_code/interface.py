@@ -9,14 +9,24 @@ import re
 import os
 import datetime
 import numpy as np
+import platform
 
 from lqr import generate_reference_trajectory, RecedingTVLQRController, TVLQRController
+from apriltag_tracker import AprilTagTracker
+from shared_state import state as shared_state, state_lock as shared_state_lock
+
 
 # Define global variables
+if platform.system() == "Windows":                  # Windows
+    SERIAL_PORT = "COM3"
+else:
+    SERIAL_PORT = "/dev/tty.usbserial-A1080DBC"     # Mac
+
+BAUD_RATE = 9600
 power = 0
 mode = "default"
 flag_terminate = False
-state = {'x': 0.0, 'y': 0.0, 'theta': 0.0}
+state = shared_state
 reference = {'x': 0.0, 'y': 0.0}
 
 class SerialInterface:
@@ -40,11 +50,11 @@ class SerialInterface:
         print(f"[PYTHON → ARDUINO] {message.strip()}")  # Debug print
         self.serial_port.write(message.encode())
 
-    def parse_acc_data(self, message):
+    def update_state(self, message):
         try:
             message = message.decode(errors='replace').replace('\r', '').replace('\x00', '').strip()
             if message.startswith("TEST") or not message:
-                return  # Skip debug or empty lines
+                return
 
             values = message.split()
             if len(values) < 4:
@@ -52,28 +62,48 @@ class SerialInterface:
                 return
 
             ax_raw, ay_raw, az, dt = map(float, values[:4])
-            acc_x = ay_raw     # Horizontal movement (left-right along wall)
-            acc_y = -ax_raw    # Vertical movement (up-down along wall)
+            acc_x = ay_raw
+            acc_y = -ax_raw
 
             vx = acc_x * dt
             vy = acc_y * dt
-            state['x'] += vx
-            state['y'] += vy
 
-            # === Replicating Arduino-based heading estimation ===
-            theta = np.degrees(np.arctan2(ay_raw, ax_raw)) % 360
-            state['theta'] = theta
+            # Compute IMU-estimated fallback state
+            imu_x = state.get('x', 0.0) + vx
+            imu_y = state.get('y', 0.0) + vy
+            imu_theta = np.degrees(np.arctan2(ay_raw, ax_raw)) % 360
 
-            print(f"[STATE] x: {state['x']:.3f}, y: {state['y']:.3f}, θ: {theta:.2f}, ax: {acc_x:.3f}, ay: {acc_y:.3f}, dt: {dt:.3f}")
+            with shared_state_lock:
+                cam_x = state.get('cam_x')
+                cam_y = state.get('cam_y')
+                cam_theta = state.get('cam_theta')
+                cam_ts = state.get('cam_timestamp', 0)
+
+            cam_age = time.time() - cam_ts
+
+            if cam_age < 0.1 and all(np.isfinite(v) for v in [cam_x, cam_y, cam_theta]):
+                with shared_state_lock:
+                    state['x'] = cam_x
+                    state['y'] = cam_y
+                    state['theta'] = cam_theta
+                source = "CAM"
+            else:
+                with shared_state_lock:
+                    state['x'] = imu_x
+                    state['y'] = imu_y
+                    state['theta'] = imu_theta
+                source = "IMU"
+            print(f"[STATE] x: {state['x']:.3f}, y: {state['y']:.3f}, θ: {state['theta']:.2f} ({source}), "
+                f"ax: {acc_x:.3f}, ay: {acc_y:.3f}, dt: {dt:.3f}")
 
         except Exception as e:
-            print(f"[ERROR] Failed to parse IMU data: {e}")
+            print(f"[ERROR] Failed to update state: {e}")
 
     def receive_data(self):
         while not self.receive_thread_stop.is_set():
             if self.serial_port.in_waiting > 0:
                 received_data = self.serial_port.readline()
-                self.parse_acc_data(received_data)
+                self.update_state(received_data)
                 self.message_queue.put(received_data)
 
     def receive_message(self):
@@ -88,7 +118,6 @@ class SerialInterface:
         self.receive_thread.join()
         if self.serial_port.is_open:
             self.serial_port.close()
-
 
 
 class App:
@@ -150,7 +179,6 @@ class App:
         self.status_label = tk.Label(self.frame, text="Status:")
         self.status_label.grid(row=6, column=0, columnspan=4, sticky="w", pady=(10, 0))
 
-
         # Start the update checker
         self.check_for_updates()
 
@@ -180,8 +208,6 @@ class App:
         rpm_m1, rpm_m2 = 0.0, 0.0  # Always define defaults
 
         while not flag_terminate:
-            timestamp = time.time()
-
             # On power-on: initialize controller
             if power == 1 and not logging_active:
                 logging_active = True
@@ -206,16 +232,17 @@ class App:
 
             # Run LQR controller if active
             if self.lqr_controller is not None:
-                x_curr = np.array([
-                    state['x'],
-                    state['y'],
-                    state.get('theta', 0.0)
-                ])
+                with shared_state_lock:
+                    x_curr = np.array([
+                        state['x'],
+                        state['y'],
+                        state.get('theta', 0.0)
+                    ])
                 rpm_m1, rpm_m2 = self.lqr_controller.get_control(x_curr)
 
                 # Clamp RPM to avoid overspeeding
-                #rpm_m1 = max(min(rpm_m1, 300), -300)
-                #rpm_m2 = max(min(rpm_m2, 300), -300)
+                # rpm_m1 = max(min(rpm_m1, 300), -300)
+                # rpm_m2 = max(min(rpm_m2, 300), -300)
 
                 # === ONLY SEND RAW RPMs ===
                 rpm_cmd = f"{rpm_m1:.1f},{rpm_m2:.1f}\n"
@@ -287,14 +314,15 @@ class App:
 
 
 def main():
-    serial_port = 'COM3'  # Use your actual Arduino port
-    serial_interface = SerialInterface(port=serial_port, baudrate=9600)
+    serial_interface = SerialInterface(port=SERIAL_PORT, baudrate=BAUD_RATE)
 
-    time.sleep(2.5)  # Allow Arduino time to boot
+    # Motor Test
+    #serial_interface.send_message("400.0,-400.0,3000\n")
+    #time.sleep(3.2)
 
-    # One-shot motor command: 400 RPM left, -400 RPM right, run for 3000ms
-    serial_interface.send_message("400.0,-400.0,3000\n")
-    time.sleep(3.2)
+    tag_tracker = AprilTagTracker(tag_size=0.045, tag_robot=0, tag_ref=1, state_ref=shared_state)
+    tag_tracker.start()
+
     # === GUI Setup ===
     root = tk.Tk()
     root.title("WIPER CONTROL")
