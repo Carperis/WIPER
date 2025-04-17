@@ -3,6 +3,7 @@ import cv2
 import pyrealsense2 as rs
 import threading
 import time
+import math
 from pupil_apriltags import Detector
 from shared_state import state as shared_state, state_lock as shared_state_lock
 
@@ -18,10 +19,17 @@ class AprilTagTracker(threading.Thread):
         self.running = True
 
         # Setup camera
-        self.pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-        self.pipeline.start(config)
+        try:
+            self.pipeline = rs.pipeline()
+            config = rs.config()
+            config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+            self.pipeline.start(config)
+            print("[INFO] AprilTag tracker started.")
+            self.camera_available = True
+        except RuntimeError:
+            print("[WARN] No camera connected. Tracker disabled.")
+            self.camera_available = False
+
 
         # Align to color stream
         self.align = rs.align(rs.stream.color)
@@ -86,8 +94,29 @@ class AprilTagTracker(threading.Thread):
 
             now = time.time()
             with shared_state_lock:
-                self.state['cam_x'] = x
-                self.state['cam_y'] = y
+                if not self.state.get('cam_pose_initialized', False):
+                    self.state['cam_pose_initialized'] = True
+                    self.state['last_cam_x'] = x
+                    self.state['last_cam_y'] = y
+                    self.state['last_cam_theta'] = theta
+                    self.state['cam_x_acc'] = 0.0
+                    self.state['cam_y_acc'] = 0.0
+                    self.state['cam_theta_acc'] = 0.0
+                else:
+                    dx = x - self.state['last_cam_x']
+                    dy = y - self.state['last_cam_y']
+                    dtheta = (theta - self.state['last_cam_theta'] + 540) % 360 - 180  # shortest angle
+
+                    # Accumulate
+                    self.state['cam_x_acc'] += dx
+                    self.state['cam_y_acc'] += dy
+
+                    # Update last pose
+                    self.state['last_cam_x'] = x
+                    self.state['last_cam_y'] = y
+
+                self.state['cam_x'] = self.state['cam_x_acc']
+                self.state['cam_y'] = self.state['cam_y_acc']
                 self.state['cam_theta'] = theta
                 self.state['cam_timestamp'] = now
 
@@ -108,6 +137,7 @@ class AprilTagTracker(threading.Thread):
 
         x = t_robot_world[0, 0]
         y = -t_robot_world[1, 0]
-        theta = np.degrees(np.arctan2(R_robot_world[1, 0], R_robot_world[0, 0])) % 360
+        yaw = math.atan2(R_robot_world[1, 0], R_robot_world[0, 0])
+        theta = np.degrees(yaw) % 360
 
         return x, y, theta

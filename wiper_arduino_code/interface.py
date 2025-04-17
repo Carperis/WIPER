@@ -3,18 +3,16 @@ import threading
 import tkinter as tk
 import atexit
 import time
-import csv
 import queue
-import re
 import os
-import datetime
 import numpy as np
 import platform
 
-from lqr import generate_reference_trajectory, RecedingTVLQRController, TVLQRController
+from lqr import TVLQRController
 from apriltag_tracker import AprilTagTracker
 from shared_state import state as shared_state, state_lock as shared_state_lock
 
+dt = 0.005  # Time step for control loop
 
 # Define global variables
 if platform.system() == "Windows":                  # Windows
@@ -26,6 +24,7 @@ BAUD_RATE = 9600
 power = 0
 mode = "default"
 flag_terminate = False
+camera_available = False
 state = shared_state
 reference = {'x': 0.0, 'y': 0.0}
 
@@ -47,31 +46,31 @@ class SerialInterface:
         atexit.register(self.close_serial)
 
     def send_message(self, message):
-        print(f"[PYTHON → ARDUINO] {message.strip()}")  # Debug print
+        print(f"[SEND] RPM Command: {message.strip()}")
         self.serial_port.write(message.encode())
 
     def update_state(self, message):
+        global camera_available
+
         try:
             message = message.decode(errors='replace').replace('\r', '').replace('\x00', '').strip()
-            if message.startswith("TEST") or not message:
+
+            if not message or message.startswith(("TEST", "Power", "READY")):
                 return
 
             values = message.split()
-            if len(values) < 4:
-                print("[WARNING] Not enough values in message")
-                return
+            ax_raw, ay_raw, az, dt_val = map(float, values[:4])
 
-            ax_raw, ay_raw, az, dt = map(float, values[:4])
+            # Reorient IMU axes (depends on your mounting!)
             acc_x = ay_raw
             acc_y = -ax_raw
 
-            vx = acc_x * dt
-            vy = acc_y * dt
+            # Compute delta position (velocity × time)
+            dx = acc_x * dt_val
+            dy = acc_y * dt_val
 
-            # Compute IMU-estimated fallback state
-            imu_x = state.get('x', 0.0) + vx
-            imu_y = state.get('y', 0.0) + vy
-            imu_theta = np.degrees(np.arctan2(ay_raw, ax_raw)) % 360
+            # IMU heading estimate
+            imu_theta = np.arctan2(ay_raw, ax_raw) % (2 * np.pi)
 
             with shared_state_lock:
                 cam_x = state.get('cam_x')
@@ -82,22 +81,34 @@ class SerialInterface:
             cam_age = time.time() - cam_ts
 
             if cam_age < 0.1 and all(np.isfinite(v) for v in [cam_x, cam_y, cam_theta]):
+                # Use camera: absolute pose
                 with shared_state_lock:
-                    state['x'] = cam_x
-                    state['y'] = cam_y
-                    state['theta'] = cam_theta
+                    if 'prev_cam_x' not in state or cam_age > 1.0:
+                        # First valid CAM reading — initialize
+                        state['prev_cam_x'] = cam_x
+                        state['prev_cam_y'] = cam_y
+                    delta_x = cam_x - state['prev_cam_x']
+                    delta_y = cam_y - state['prev_cam_y']
+                    state['x'] = state.get('x', 0.0) + delta_x
+                    state['y'] = state.get('y', 0.0) + delta_y
+                    state['theta'] = np.radians(cam_theta)  # Use absolute heading
+                    state['prev_cam_x'] = cam_x
+                    state['prev_cam_y'] = cam_y
                 source = "CAM"
             else:
+                # Use IMU: accumulate pose estimate
                 with shared_state_lock:
-                    state['x'] = imu_x
-                    state['y'] = imu_y
+                    state['x'] = state.get('x', 0.0) + dx
+                    state['y'] = state.get('y', 0.0) + dy
                     state['theta'] = imu_theta
                 source = "IMU"
-            print(f"[STATE] x: {state['x']:.3f}, y: {state['y']:.3f}, θ: {state['theta']:.2f} ({source}), "
-                f"ax: {acc_x:.3f}, ay: {acc_y:.3f}, dt: {dt:.3f}")
+
+            print(f"[{source}] state: x = {state['x']:.3f}, y = {state['y']:.3f}, θ = {state['theta']:.2f}")
+
 
         except Exception as e:
             print(f"[ERROR] Failed to update state: {e}")
+
 
     def receive_data(self):
         while not self.receive_thread_stop.is_set():
@@ -204,58 +215,74 @@ class App:
 
     def cmd_write_thread(self):
         global power, mode, flag_terminate, state, reference
-        logging_active = False  # Flag to control logging state
-        rpm_m1, rpm_m2 = 0.0, 0.0  # Always define defaults
+        logging_active = False
+        rpm_m1, rpm_m2 = 0.0, 0.0
+        dt_local = dt  # Time step
+        next_loop_time = time.time()
 
         while not flag_terminate:
-            # On power-on: initialize controller
+            loop_start = time.time()
+
+            # === Power ON: Initialize controller ===
             if power == 1 and not logging_active:
                 logging_active = True
                 print("[INFO] Power ON: Logging started.")
-                start_state = (
-                    state['x'],
-                    state['y'],
-                    state.get('theta', 0.0)
-                )
-                # OPTION 1: Traditional TVLQR
-                # self.lqr_controller = TVLQRController(start=start_state, mode=self.selected_mode, N=50)
+                start_state = (state['x'], state['y'], state.get('theta', 0.0))
+                self.lqr_controller = TVLQRController(start=start_state, mode=self.selected_mode, N=5, dt=dt_local)
+                self.lqr_controller.step_counter = 1  # Initialize step counter
 
-                # OPTION 2: Receding-Horizon TVLQR
-                full_ref = generate_reference_trajectory(start_state, N=50, mode=self.selected_mode)
-                self.lqr_controller = RecedingTVLQRController(full_ref_traj=full_ref, N=10)
-
-            # On power-off: stop controller
+            # === Power OFF: Clean up ===
             if power == 0 and logging_active:
                 logging_active = False
                 print("[INFO] Power OFF: Logging stopped.")
                 self.lqr_controller = None
 
-            # Run LQR controller if active
+            # === Control Loop ===
             if self.lqr_controller is not None:
+                k = self.lqr_controller.step_counter
+                if k >= self.lqr_controller.N - 1:
+                    # Stop if finished
+                    self.serial_interface.send_message("0.0,0.0\n")
+                    print("[INFO] Trajectory completed.")
+                    time.sleep(0.1)
+                    continue
+
                 with shared_state_lock:
-                    x_curr = np.array([
-                        state['x'],
-                        state['y'],
-                        state.get('theta', 0.0)
-                    ])
+                    x_curr = np.array([state['x'], state['y'], state['theta']])
+                    source = "CAM" if (time.time() - state.get('cam_timestamp', 0) < 0.1 and 
+                                    all(np.isfinite([state.get('cam_x'), state.get('cam_y'), state.get('cam_theta')]))) else "IMU"
+
+
+                k = self.lqr_controller.step_counter
+                x_ref = self.lqr_controller.reference_trajectory[k]
+
+                # Always compute and send control output
                 rpm_m1, rpm_m2 = self.lqr_controller.get_control(x_curr)
 
-                # Clamp RPM to avoid overspeeding
-                # rpm_m1 = max(min(rpm_m1, 300), -300)
-                # rpm_m2 = max(min(rpm_m2, 300), -300)
+                # Print state info
+                print(f"[{source}][CONTROL] x = {x_curr[0]:.3f}, y = {x_curr[1]:.3f}, θ = {x_curr[2]:.2f} | "
+                    f"xref = {x_ref[0]:.3f}, yref = {x_ref[1]:.3f}, θref = {x_ref[2]:.2f}")
 
-                # === ONLY SEND RAW RPMs ===
+                # Send control command
                 rpm_cmd = f"{rpm_m1:.1f},{rpm_m2:.1f}\n"
                 self.serial_interface.send_message(rpm_cmd)
 
-                print(f"[MOTOR OUTPUT] RPM_M1: {rpm_m1:.1f}, RPM_M2: {rpm_m2:.1f}")
+                # === Only advance step if robot is close enough ===
+                pos_error = np.linalg.norm(x_curr[:2] - x_ref[:2])
+                theta_error = abs((x_curr[2] - x_ref[2] + np.pi) % (2 * np.pi) - np.pi)
 
-            time.sleep(0.1)  # Control loop rate
+                if pos_error < 0.05 and theta_error < 0.2 and k < self.lqr_controller.N - 2:
+                    self.lqr_controller.step_counter += 1
+
+            # === Sleep until next loop ===
+            next_loop_time += dt_local
+            sleep_time = max(0.0, next_loop_time - time.time())
+            time.sleep(sleep_time)
 
 
     def send_message(self):
         message = self.message_entry.get()
-        self.serial_interface.send_message(message)  # Use serial_interface instead of bluetooth_interface
+        self.serial_interface.send_message(message)
         self.previous_messages.insert(0, message)
         self.current_message_index = -1
         self.message_entry.delete(0, tk.END)
@@ -316,12 +343,13 @@ class App:
 def main():
     serial_interface = SerialInterface(port=SERIAL_PORT, baudrate=BAUD_RATE)
 
-    # Motor Test
-    #serial_interface.send_message("400.0,-400.0,3000\n")
-    #time.sleep(3.2)
-
-    tag_tracker = AprilTagTracker(tag_size=0.045, tag_robot=0, tag_ref=1, state_ref=shared_state)
-    tag_tracker.start()
+    try:
+        tag_tracker = AprilTagTracker(tag_size=0.045, tag_robot=0, tag_ref=1, state_ref=shared_state)
+        tag_tracker.start()
+        print("[INFO] AprilTag tracker started.")
+    except Exception as e:
+        print(f"[WARNING] AprilTag tracker could not be initialized: {e}")
+        tag_tracker = None
 
     # === GUI Setup ===
     root = tk.Tk()

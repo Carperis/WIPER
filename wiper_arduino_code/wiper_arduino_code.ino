@@ -124,7 +124,7 @@ void loop() {
     String cmd = Serial.readStringUntil('\n');
   
     if (cmd.length() > 0) {
-      Serial.println(cmd);
+      //Serial.println(cmd);
   
       // Parse first number (r1)
       r1 = cmd.substring(0, cmd.indexOf(',')).toDouble();
