@@ -12,11 +12,11 @@ from lqr import TVLQRController
 from apriltag_tracker import AprilTagTracker
 from shared_state import state as shared_state, state_lock as shared_state_lock
 
-dt = 0.005  # Time step for control loop
+dt = 0.5  # Time step for control loop
 
 # Define global variables
 if platform.system() == "Windows":                  # Windows
-    SERIAL_PORT = "COM3"
+    SERIAL_PORT = "COM5"
 else:
     SERIAL_PORT = "/dev/tty.usbserial-A1080DBC"     # Mac
 
@@ -227,9 +227,21 @@ class App:
             if power == 1 and not logging_active:
                 logging_active = True
                 print("[INFO] Power ON: Logging started.")
-                start_state = (state['x'], state['y'], state.get('theta', 0.0))
-                self.lqr_controller = TVLQRController(start=start_state, mode=self.selected_mode, N=5, dt=dt_local)
-                self.lqr_controller.step_counter = 1  # Initialize step counter
+
+                with shared_state_lock:
+                    x0 = state.get('x', 0.0)
+                    y0 = state.get('y', 0.0)
+                    theta0 = state.get('theta', 0.0)
+                start_state = (x0, y0, theta0)
+
+                self.lqr_controller = TVLQRController(start=(0, 0, theta0), mode=self.selected_mode, N=15, dt=dt_local)
+
+                shifted_traj = [
+                    (x0 + dx, y0 + dy, dtheta)
+                    for dx, dy, dtheta in self.lqr_controller.reference_trajectory
+                ]
+                self.lqr_controller.reference_trajectory = shifted_traj
+                self.lqr_controller.step_counter = 0
 
             # === Power OFF: Clean up ===
             if power == 0 and logging_active:
@@ -240,44 +252,45 @@ class App:
             # === Control Loop ===
             if self.lqr_controller is not None:
                 k = self.lqr_controller.step_counter
-                if k >= self.lqr_controller.N - 1:
-                    # Stop if finished
-                    self.serial_interface.send_message("0.0,0.0\n")
-                    print("[INFO] Trajectory completed.")
-                    time.sleep(0.1)
-                    continue
 
                 with shared_state_lock:
                     x_curr = np.array([state['x'], state['y'], state['theta']])
                     source = "CAM" if (time.time() - state.get('cam_timestamp', 0) < 0.1 and 
                                     all(np.isfinite([state.get('cam_x'), state.get('cam_y'), state.get('cam_theta')]))) else "IMU"
 
-
-                k = self.lqr_controller.step_counter
                 x_ref = self.lqr_controller.reference_trajectory[k]
+                rpm_m2, rpm_m1 = self.lqr_controller.get_control(x_curr)
 
-                # Always compute and send control output
-                rpm_m1, rpm_m2 = self.lqr_controller.get_control(x_curr)
-
-                # Print state info
                 print(f"[{source}][CONTROL] x = {x_curr[0]:.3f}, y = {x_curr[1]:.3f}, θ = {x_curr[2]:.2f} | "
                     f"xref = {x_ref[0]:.3f}, yref = {x_ref[1]:.3f}, θref = {x_ref[2]:.2f}")
 
-                # Send control command
                 rpm_cmd = f"{rpm_m1:.1f},{rpm_m2:.1f}\n"
                 self.serial_interface.send_message(rpm_cmd)
 
-                # === Only advance step if robot is close enough ===
                 pos_error = np.linalg.norm(x_curr[:2] - x_ref[:2])
                 theta_error = abs((x_curr[2] - x_ref[2] + np.pi) % (2 * np.pi) - np.pi)
+                print(f"[ERROR] pos = {pos_error:.4f}, theta = {theta_error:.4f}")
 
-                if pos_error < 0.05 and theta_error < 0.2 and k < self.lqr_controller.N - 2:
-                    self.lqr_controller.step_counter += 1
+                pos_thres = 0.02
+                #theta_thres = 0.05
+
+                if k == self.lqr_controller.N - 2 and pos_error < pos_thres: #and theta_error < theta_thres:
+                    self.serial_interface.send_message("0.0,0.0\n")
+                    print("[INFO] Final step reached and within threshold. Stopping.")
+                    self.lqr_controller = None
+                    continue
+
+                if pos_error < pos_thres: #and theta_error < theta_thres:
+                    if self.lqr_controller.step_counter < self.lqr_controller.N - 1:
+                        self.lqr_controller.step_counter += 1
 
             # === Sleep until next loop ===
             next_loop_time += dt_local
             sleep_time = max(0.0, next_loop_time - time.time())
-            time.sleep(sleep_time)
+            time.sleep(sleep_time+0.3)
+
+
+
 
 
     def send_message(self):

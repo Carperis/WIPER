@@ -41,12 +41,14 @@ def generate_reference_trajectory(start, N, mode=1, dt=0.05):
     y_vals = np.zeros(N)
 
     if mode == 1:
-        y_vals = np.linspace(y0, y0 + 0.2, N)
+        theta_vals = np.full(N, 0)
+        y_vals = np.linspace(y0, y0 + 0.5, N)
         x_vals = np.full(N, x0)
 
     elif mode == 2:
-        x_vals = np.linspace(x0, x0 + 0.2, N)
+        x_vals = np.linspace(x0, x0 + 0.5, N)
         y_vals = np.full(N, y0)
+        theta_vals = np.full(N, 1/2*np.pi)  # Keep theta constant
 
     elif mode == 3:
         r = 0.1
@@ -69,9 +71,10 @@ def generate_reference_trajectory(start, N, mode=1, dt=0.05):
     # Compute heading angle (theta) from gradient
     dx = np.gradient(x_vals)
     dy = np.gradient(y_vals)
-    theta_vals = np.arctan2(dy, dx) - np.pi / 2  # Subtract 90° to make 0 = up
-    theta_vals = (theta_vals + np.pi) % (2 * np.pi) - np.pi  # wrap to [-pi, pi]
-
+    #theta_vals = np.arctan2(dy, dx) - np.pi / 2  # Subtract 90° to make 0 = up
+    print(theta_vals)
+    #theta_vals = (theta_vals + np.pi) % (2 * np.pi) - np.pi  # wrap to [-pi, pi]
+    
     # Create state trajectory
     trajectory = [np.array([x_vals[i], y_vals[i], theta_vals[i]]) for i in range(N)]
 
@@ -87,16 +90,16 @@ def generate_reference_trajectory(start, N, mode=1, dt=0.05):
 
 
 class TVLQRController:
-    def __init__(self, start, mode=1, N=50, dt=0.05):
+    def __init__(self, start, mode=1, N=50, dt=0.4):
         self.N = N
         self.dt = dt
         self.nx = 3  # state dimension: [x, y, theta]
         self.nu = 2  # input dimension: [v, omega]
         
         # Cost matrices
-        self.Q = np.diag([1, 1, 1.0])
+        self.Q = np.diag([1.0, 1.0, 1.0])
         self.Qf = 10 * self.Q
-        self.R = 1 * np.eye(self.nu)
+        self.R = 0.1 * np.eye(self.nu)
 
         # Generate trajectory and feedforward inputs
         self.reference_trajectory, self.reference_inputs = generate_reference_trajectory(
@@ -148,6 +151,7 @@ class TVLQRController:
         Kk = self.K_list[self.step_counter]
 
         state_error = x_current - x_ref
+        print(f"[DEBUG] State error: {state_error}")
         state_error[2] = (state_error[2] + np.pi) % (2 * np.pi) - np.pi  # wrap θ error to [-π, π]
 
         control_output = u_ref - Kk @ state_error  # [v, omega]
@@ -159,23 +163,18 @@ class TVLQRController:
         r = 0.03  # wheel radius in meters
 
         # === Convert to wheel linear velocities and RPM ===
-        omega = -omega
+        #control_factor = 
+
+        omega = 2 * omega
         v_left = v - omega * (L / 2)
         v_right = v + omega * (L / 2)
+        print(f"[DEBUG] Wheel velocities: v_left: {v_left:.3f}, v_right: {v_right:.3f}")
         rpm_m1 = (v_left / (2 * np.pi * r)) * 60
         rpm_m2 = (v_right / (2 * np.pi * r)) * 60
         #rpm_m1 = np.clip(rpm_m1, -300, 300)
         #rpm_m2 = np.clip(rpm_m2, -300, 300)
-
-        # === PROXIMITY GATE: only advance when close enough ===
-        pos_err = np.linalg.norm(x_current[:2] - x_ref[:2])
-        angle_err = np.abs((x_current[2] - x_ref[2] + np.pi) % (2 * np.pi) - np.pi)
         
-        pos_thresh = 0.01  # 1 cm
-        angle_thresh = np.deg2rad(10)  # 10 degrees
-
-        if pos_err < pos_thresh and angle_err < angle_thresh:
-            self.step_counter = min(self.step_counter + 1, self.N - 2)
+        print(f"[TVLQR] step {self.step_counter} | u_ref: [{u_ref[0]:.3f}, {u_ref[1]:.3f}] → v: {v:.3f}, ω: {omega:.3f}")
 
         return rpm_m1, rpm_m2
 
