@@ -12,7 +12,7 @@ from lqr import TVLQRController
 from apriltag_tracker import AprilTagTracker
 from shared_state import state as shared_state, state_lock as shared_state_lock
 
-dt = 0.5  # Time step for control loop
+dt = 0.05  # Time step for control loop
 
 # Define global variables
 if platform.system() == "Windows":                  # Windows
@@ -103,7 +103,7 @@ class SerialInterface:
                     state['theta'] = imu_theta
                 source = "IMU"
 
-            print(f"[{source}] state: x = {state['x']:.3f}, y = {state['y']:.3f}, θ = {state['theta']:.2f}")
+            #print(f"[{source}] state: x = {state['x']:.3f}, y = {state['y']:.3f}, θ = {state['theta']:.2f}")
 
 
         except Exception as e:
@@ -234,7 +234,7 @@ class App:
                     theta0 = state.get('theta', 0.0)
                 start_state = (x0, y0, theta0)
 
-                self.lqr_controller = TVLQRController(start=(0, 0, theta0), mode=self.selected_mode, N=15, dt=dt_local)
+                self.lqr_controller = TVLQRController(start=(0, 0, theta0), mode=self.selected_mode, N=30, dt=dt_local)
 
                 shifted_traj = [
                     (x0 + dx, y0 + dy, dtheta)
@@ -250,6 +250,7 @@ class App:
                 self.lqr_controller = None
 
             # === Control Loop ===
+            prev_time = time.time()
             if self.lqr_controller is not None:
                 k = self.lqr_controller.step_counter
 
@@ -258,8 +259,11 @@ class App:
                     source = "CAM" if (time.time() - state.get('cam_timestamp', 0) < 0.1 and 
                                     all(np.isfinite([state.get('cam_x'), state.get('cam_y'), state.get('cam_theta')]))) else "IMU"
 
-                x_ref = self.lqr_controller.reference_trajectory[k]
+                x_ref = self.lqr_controller.reference_trajectory[k+1]
                 rpm_m2, rpm_m1 = self.lqr_controller.get_control(x_curr)
+
+                # print dim of x_ref
+                #print(f"[DEBUG] x_ref: {x_ref}, dim: {np.shape(x_ref)}")
 
                 print(f"[{source}][CONTROL] x = {x_curr[0]:.3f}, y = {x_curr[1]:.3f}, θ = {x_curr[2]:.2f} | "
                     f"xref = {x_ref[0]:.3f}, yref = {x_ref[1]:.3f}, θref = {x_ref[2]:.2f}")
@@ -267,11 +271,12 @@ class App:
                 rpm_cmd = f"{rpm_m1:.1f},{rpm_m2:.1f}\n"
                 self.serial_interface.send_message(rpm_cmd)
 
-                pos_error = np.linalg.norm(x_curr[:2] - x_ref[:2])
+                pos_error = np.linalg.norm(x_curr[0] - x_ref[0])
+                #pos_error = np.linalg.norm(x_curr[:2] - x_ref[:2])
                 theta_error = abs((x_curr[2] - x_ref[2] + np.pi) % (2 * np.pi) - np.pi)
                 print(f"[ERROR] pos = {pos_error:.4f}, theta = {theta_error:.4f}")
 
-                pos_thres = 0.02
+                pos_thres = 0.05
                 #theta_thres = 0.05
 
                 if k == self.lqr_controller.N - 2 and pos_error < pos_thres: #and theta_error < theta_thres:
@@ -285,11 +290,15 @@ class App:
                         self.lqr_controller.step_counter += 1
 
             # === Sleep until next loop ===
-            next_loop_time += dt_local
+            if power == 1:
+                now = time.time()
+                loop_hz = 1.0 / (now - prev_time) if now != prev_time else 0.0
+                #print(f"[LOOP] Rate: {loop_hz:.2f} Hz")
+                prev_time = now
+
             sleep_time = max(0.0, next_loop_time - time.time())
-            time.sleep(sleep_time+0.3)
-
-
+            time_del = 0.01  # Adjust this value to control the delay between commands
+            time.sleep(sleep_time + time_del)
 
 
 
@@ -357,7 +366,7 @@ def main():
     serial_interface = SerialInterface(port=SERIAL_PORT, baudrate=BAUD_RATE)
 
     try:
-        tag_tracker = AprilTagTracker(tag_size=0.045, tag_robot=0, tag_ref=1, state_ref=shared_state)
+        tag_tracker = AprilTagTracker(tag_size=0.041, tag_robot=0, tag_ref=1, state_ref=shared_state)
         tag_tracker.start()
         print("[INFO] AprilTag tracker started.")
     except Exception as e:

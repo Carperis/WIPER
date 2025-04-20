@@ -9,7 +9,7 @@ from shared_state import state as shared_state, state_lock as shared_state_lock
 
 
 class AprilTagTracker(threading.Thread):
-    def __init__(self, tag_size=0.045, tag_robot=0, tag_ref=1, state_ref=None):
+    def __init__(self, tag_size=0.041, tag_robot=0, tag_ref=1, state_ref=None):
         super().__init__()
         self.daemon = True
         self.tag_size = tag_size

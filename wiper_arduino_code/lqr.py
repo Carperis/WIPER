@@ -40,21 +40,20 @@ def generate_reference_trajectory(start, N, mode=1, dt=0.05):
     x_vals = np.zeros(N)
     y_vals = np.zeros(N)
 
-    if mode == 1:
+    if mode == 1:# Up
         theta_vals = np.full(N, 0)
-        y_vals = np.linspace(y0, y0 + 0.5, N)
+        y_vals = np.linspace(y0, y0 + 0.2, N)
         x_vals = np.full(N, x0)
 
-    elif mode == 2:
+    elif mode == 2:# Left
+        x_vals = np.linspace(x0, x0 - 0.5, N)
+        y_vals = np.full(N, y0)
+        theta_vals = np.full(N, -1/2*np.pi)  # Keep theta constant
+
+    elif mode == 3:# Right
         x_vals = np.linspace(x0, x0 + 0.5, N)
         y_vals = np.full(N, y0)
-        theta_vals = np.full(N, 1/2*np.pi)  # Keep theta constant
-
-    elif mode == 3:
-        r = 0.1
-        angles = np.linspace(0, np.pi / 2, N)
-        x_vals = x0 + r * np.sin(angles)
-        y_vals = y0 + r * (1 - np.cos(angles))
+        theta_vals = np.full(N, 1/2*np.pi)
 
     elif mode == 4:
         split = N // 2
@@ -86,8 +85,8 @@ def generate_reference_trajectory(start, N, mode=1, dt=0.05):
     # Create input list (length N - 1)
     inputs = [np.array([v_vals[i], omega_vals[i]]) for i in range(N - 1)]
 
+    inputs[-1] = np.array([0.0, 0.0])  # Stop at the final input
     return trajectory, inputs
-
 
 class TVLQRController:
     def __init__(self, start, mode=1, N=50, dt=0.4):
@@ -97,7 +96,7 @@ class TVLQRController:
         self.nu = 2  # input dimension: [v, omega]
         
         # Cost matrices
-        self.Q = np.diag([1.0, 1.0, 1.0])
+        self.Q = np.diag([1.0, 1.0, 10.0])
         self.Qf = 10 * self.Q
         self.R = 0.1 * np.eye(self.nu)
 
@@ -151,7 +150,7 @@ class TVLQRController:
         Kk = self.K_list[self.step_counter]
 
         state_error = x_current - x_ref
-        print(f"[DEBUG] State error: {state_error}")
+        #print(f"[DEBUG] State error: {state_error}")
         state_error[2] = (state_error[2] + np.pi) % (2 * np.pi) - np.pi  # wrap θ error to [-π, π]
 
         control_output = u_ref - Kk @ state_error  # [v, omega]
@@ -159,16 +158,14 @@ class TVLQRController:
         v, omega = control_output  # forward velocity and angular velocity
 
         # === Robot geometry ===
-        L = 0.12  # wheelbase in meters
+        L = 0.215  # wheelbase in meters
         r = 0.03  # wheel radius in meters
 
         # === Convert to wheel linear velocities and RPM ===
-        #control_factor = 
-
-        omega = 2 * omega
+        #omega = 2 * omega
         v_left = v - omega * (L / 2)
         v_right = v + omega * (L / 2)
-        print(f"[DEBUG] Wheel velocities: v_left: {v_left:.3f}, v_right: {v_right:.3f}")
+        #print(f"[DEBUG] Wheel velocities: v_left: {v_left:.3f}, v_right: {v_right:.3f}")
         rpm_m1 = (v_left / (2 * np.pi * r)) * 60
         rpm_m2 = (v_right / (2 * np.pi * r)) * 60
         #rpm_m1 = np.clip(rpm_m1, -300, 300)
